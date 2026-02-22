@@ -81,6 +81,7 @@ export class OpsDb {
       CREATE TABLE IF NOT EXISTS agent_policies (
         agent_id TEXT PRIMARY KEY,
         dm_policy TEXT NOT NULL DEFAULT 'mention-only',
+        bot_mention_policy TEXT NOT NULL DEFAULT 'off',
         FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
       );
 
@@ -278,17 +279,29 @@ export class OpsDb {
   }
 
   setAgentDmPolicy(agentId: string, dmPolicy: string) {
+    const current = this.getAgentDmPolicy(agentId);
     this.db
       .prepare(
-        `INSERT INTO agent_policies (agent_id, dm_policy)
-         VALUES (?, ?)
+        `INSERT INTO agent_policies (agent_id, dm_policy, bot_mention_policy)
+         VALUES (?, ?, ?)
          ON CONFLICT(agent_id) DO UPDATE SET dm_policy=excluded.dm_policy`
       )
-      .run(agentId, dmPolicy || "mention-only");
+      .run(agentId, dmPolicy || "mention-only", current?.bot_mention_policy || "off");
+  }
+
+  setAgentBotMentionPolicy(agentId: string, policy: string) {
+    const current = this.getAgentDmPolicy(agentId);
+    this.db
+      .prepare(
+        `INSERT INTO agent_policies (agent_id, dm_policy, bot_mention_policy)
+         VALUES (?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET bot_mention_policy=excluded.bot_mention_policy`
+      )
+      .run(agentId, current?.dm_policy || "mention-only", policy || "off");
   }
 
   getAgentDmPolicy(agentId: string) {
-    return this.db.prepare(`SELECT dm_policy FROM agent_policies WHERE agent_id = ?`).get(agentId);
+    return this.db.prepare(`SELECT dm_policy, bot_mention_policy FROM agent_policies WHERE agent_id = ?`).get(agentId);
   }
 
   setChannelBinding(teamId: string, agentId: string, guildId: string | undefined, channelId: string) {

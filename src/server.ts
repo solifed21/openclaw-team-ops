@@ -144,6 +144,7 @@ const server = http.createServer(async (req, res) => {
     const [provider, modelName] = String(f.modelRef || "openclaw::").split("::");
     db.setAgentModel(agentId, provider || "openclaw", modelName || "");
     if (f.dmPolicy) db.setAgentDmPolicy(agentId, f.dmPolicy);
+    if (f.botMentionPolicy) db.setAgentBotMentionPolicy(agentId, f.botMentionPolicy);
     if (Object.prototype.hasOwnProperty.call(f, "discordBotToken")) {
       db.setAgentDiscordToken(agentId, f.discordBotToken || "");
     }
@@ -267,18 +268,24 @@ const server = http.createServer(async (req, res) => {
       cfg.channels.discord.guilds = cfg.channels.discord.guilds || {};
       cfg.channels.discord.accounts = cfg.channels.discord.accounts || {};
 
-      // Agent token -> channels.discord.accounts.{agentId}.token
+      // Agent token + bot mention policy -> channels.discord.accounts.{agentId}
+      cfg.meta = cfg.meta || {};
+      cfg.meta.botMentionPolicies = cfg.meta.botMentionPolicies || {};
       for (const a of agents) {
         const dbAgentId = String(a.agent_id || "");
         const agentId = runtimeIdByDbAgentId.get(dbAgentId) || "";
         if (!agentId) continue;
         const token = a.integrations?.discord_bot_token || "";
-        if (!token) continue;
+        const botPolicy = String(a.policies?.bot_mention_policy || "off");
+
         cfg.channels.discord.accounts[agentId] = {
           ...(cfg.channels.discord.accounts[agentId] || {}),
-          token,
+          ...(token ? { token } : {}),
           enabled: true,
+          allowBotMentions: botPolicy !== 'off',
+          botMentionScope: botPolicy,
         };
+        cfg.meta.botMentionPolicies[agentId] = botPolicy;
       }
 
       // Team channel bindings -> guild/channel allow + bindings[]
@@ -430,7 +437,7 @@ const server = http.createServer(async (req, res) => {
       ${teamBlocks}
       <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => {
         const current = `${a.model?.model_provider || 'openclaw'}::${a.model?.model_name || ''}`;
-        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">dm 정책: ${esc(a.policies?.dm_policy || 'mention-only')}</div><div class="muted">discord token: ${a.integrations?.discord_bot_token ? '연결됨(숨김)' : '미설정'}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">에이전트 이름</label><input name="name" value="${esc(a.name)}"/><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor-backend","executor-frontend","executor-mobile","executor-data","executor-devops","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select><label class="muted">DM 호출 정책</label><select name="dmPolicy">${['off','mention-only','allow'].map(p=>`<option ${ (a.policies?.dm_policy||'mention-only')===p?'selected':'' }>${p}</option>`).join('')}</select>${a.integrations?.discord_bot_token ? '<div class="muted">Discord Bot Token은 등록 후 보안상 숨김 처리됨</div>' : '<label class="muted">Discord Bot Token (에이전트 전용)</label><input name="discordBotToken" value="" placeholder="Bot token"/>'}<button type="submit">이름/직책/모델/DM정책 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
+        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">dm 정책: ${esc(a.policies?.dm_policy || 'mention-only')}</div><div class="muted">봇 멘션 정책: ${esc(a.policies?.bot_mention_policy || 'off')}</div><div class="muted">discord token: ${a.integrations?.discord_bot_token ? '연결됨(숨김)' : '미설정'}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">에이전트 이름</label><input name="name" value="${esc(a.name)}"/><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor-backend","executor-frontend","executor-mobile","executor-data","executor-devops","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select><label class="muted">DM 호출 정책</label><select name="dmPolicy">${['off','mention-only','allow'].map(p=>`<option ${ (a.policies?.dm_policy||'mention-only')===p?'selected':'' }>${p}</option>`).join('')}</select><label class="muted">봇끼리 멘션 정책</label><select name="botMentionPolicy">${['off','same-team','all'].map(p=>`<option ${ (a.policies?.bot_mention_policy||'off')===p?'selected':'' }>${p}</option>`).join('')}</select>${a.integrations?.discord_bot_token ? '<div class="muted">Discord Bot Token은 등록 후 보안상 숨김 처리됨</div>' : '<label class="muted">Discord Bot Token (에이전트 전용)</label><input name="discordBotToken" value="" placeholder="Bot token"/>'}<button type="submit">이름/직책/모델/정책 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
       }).join('') || '<div class="muted">없음</div>'}</div></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
