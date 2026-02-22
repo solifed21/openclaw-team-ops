@@ -39,20 +39,34 @@ function loadRegisteredModels(): { provider: string; name: string }[] {
     const cfg = JSON.parse(raw);
 
     const out: { provider: string; name: string }[] = [];
-    const push = (provider: string, name: string) => {
-      if (!name) return;
-      out.push({ provider: provider || "openclaw", name });
+    const pushModelRef = (modelRef: string) => {
+      const ref = String(modelRef || "").trim();
+      if (!ref) return;
+      const [provider, ...rest] = ref.split("/");
+      const name = rest.length ? `${provider}/${rest.join("/")}` : provider;
+      const p = rest.length ? provider : "openclaw";
+      out.push({ provider: p, name });
     };
 
+    // Legacy shapes
     const models = Array.isArray(cfg?.models) ? cfg.models : [];
     for (const m of models) {
-      push(String(m?.provider || m?.modelProvider || "openclaw"), String(m?.name || m?.model || m?.id || ""));
+      const ref = String(m?.name || m?.model || m?.id || "");
+      if (ref.includes("/")) pushModelRef(ref);
+      else out.push({ provider: String(m?.provider || m?.modelProvider || "openclaw"), name: ref });
     }
 
-    const agents = Array.isArray(cfg?.agents) ? cfg.agents : [];
-    for (const a of agents) {
-      push(String(a?.modelProvider || a?.provider || "openclaw"), String(a?.model || a?.modelName || ""));
+    const legacyAgents = Array.isArray(cfg?.agents) ? cfg.agents : [];
+    for (const a of legacyAgents) pushModelRef(String(a?.model || a?.modelName || ""));
+
+    // Current openclaw schema: agents.defaults.models + agents.defaults.model.primary + agents.list[].model
+    const defaults = cfg?.agents?.defaults;
+    if (defaults?.model?.primary) pushModelRef(String(defaults.model.primary));
+    if (defaults?.models && typeof defaults.models === "object") {
+      for (const key of Object.keys(defaults.models)) pushModelRef(key);
     }
+    const list = Array.isArray(cfg?.agents?.list) ? cfg.agents.list : [];
+    for (const a of list) pushModelRef(String(a?.model || ""));
 
     const uniq = new Map<string, { provider: string; name: string }>();
     for (const m of out) uniq.set(`${m.provider}::${m.name}`, m);
