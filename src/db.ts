@@ -146,6 +146,16 @@ export class OpsDb {
         payload_json TEXT NOT NULL
       );
     `);
+
+    // Backward-compatible migrations for existing DB files.
+    this.ensureColumn("agent_policies", "bot_mention_policy", "TEXT NOT NULL DEFAULT 'off'");
+  }
+
+  private ensureColumn(table: string, column: string, ddl: string) {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
   }
 
   createTeam(teamId: string, name: string, description?: string) {
