@@ -197,22 +197,82 @@ const server = http.createServer(async (req, res) => {
       const raw = readFileSync(cfgPath, "utf8");
       const cfg = JSON.parse(raw);
       const agents = db.listAgents() as any[];
-      const bindings = db.listChannelBindings() as any[];
+      const channelBindings = db.listChannelBindings() as any[];
+
+      cfg.agents = cfg.agents || {};
+      cfg.agents.list = Array.isArray(cfg.agents.list) ? cfg.agents.list : [];
+
+      // Merge/Upsert team-ops agents into OpenClaw agent list (preserve existing unknown fields)
+      const existingById = new Map((cfg.agents.list || []).map((a: any) => [a.id, a]));
+      for (const a of agents) {
+        const agentId = String(a.agent_id || "").replace(/^agent_/, "");
+        if (!agentId) continue;
+        const prev = existingById.get(agentId) || { id: agentId };
+        const modelRef = a.model?.model_name || prev.model || cfg?.agents?.defaults?.model?.primary;
+        existingById.set(agentId, {
+          ...prev,
+          id: agentId,
+          model: modelRef,
+        });
+      }
+      cfg.agents.list = [...existingById.values()];
+
+      // Ensure discord channel tree exists
+      cfg.channels = cfg.channels || {};
+      cfg.channels.discord = cfg.channels.discord || { enabled: true, guilds: {}, accounts: {} };
+      cfg.channels.discord.guilds = cfg.channels.discord.guilds || {};
+      cfg.channels.discord.accounts = cfg.channels.discord.accounts || {};
+
+      // Agent token -> channels.discord.accounts.{agentId}.token
+      for (const a of agents) {
+        const agentId = String(a.agent_id || "").replace(/^agent_/, "");
+        if (!agentId) continue;
+        const token = a.integrations?.discord_bot_token || "";
+        if (!token) continue;
+        cfg.channels.discord.accounts[agentId] = {
+          ...(cfg.channels.discord.accounts[agentId] || {}),
+          token,
+          enabled: true,
+        };
+      }
+
+      // Team channel bindings -> guild/channel allow + bindings[]
+      cfg.bindings = Array.isArray(cfg.bindings) ? cfg.bindings : [];
+      const bindingKey = (b: any) => `${b?.agentId}|${b?.match?.guildId}|${b?.match?.peer?.id}`;
+      const existingBindingKeys = new Set(cfg.bindings.map((b: any) => bindingKey(b)));
+
+      for (const b of channelBindings) {
+        const agentId = String(b.agent_id || "").replace(/^agent_/, "");
+        const guildId = String(b.guild_id || "");
+        const channelId = String(b.channel_id || "");
+        if (!agentId || !guildId || !channelId) continue;
+
+        cfg.channels.discord.guilds[guildId] = cfg.channels.discord.guilds[guildId] || { channels: {} };
+        cfg.channels.discord.guilds[guildId].channels = cfg.channels.discord.guilds[guildId].channels || {};
+        cfg.channels.discord.guilds[guildId].channels[channelId] = {
+          ...(cfg.channels.discord.guilds[guildId].channels[channelId] || {}),
+          allow: true,
+          requireMention: true,
+        };
+
+        const binding = {
+          agentId,
+          match: {
+            channel: "discord",
+            accountId: agentId,
+            guildId,
+            peer: { kind: "channel", id: channelId },
+          },
+        };
+        const key = bindingKey(binding);
+        if (!existingBindingKeys.has(key)) {
+          cfg.bindings.push(binding);
+          existingBindingKeys.add(key);
+        }
+      }
 
       cfg.meta = cfg.meta || {};
-      cfg.meta.teamOps = {
-        syncedAt: new Date().toISOString(),
-        agents: agents.map((a) => ({
-          agentId: a.agent_id,
-          name: a.name,
-          role: a.role,
-          modelProvider: a.model?.model_provider || "",
-          modelName: a.model?.model_name || "",
-          discordBotToken: a.integrations?.discord_bot_token || "",
-          skills: a.skills || [],
-        })),
-        channelBindings: bindings,
-      };
+      cfg.meta.lastTouchedAt = new Date().toISOString();
 
       writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
       return redirect(res, "/settings?sync=ok");
