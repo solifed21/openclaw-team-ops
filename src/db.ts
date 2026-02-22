@@ -72,6 +72,12 @@ export class OpsDb {
         FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
       );
 
+      CREATE TABLE IF NOT EXISTS agent_integrations (
+        agent_id TEXT PRIMARY KEY,
+        discord_bot_token TEXT,
+        FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
+      );
+
       CREATE TABLE IF NOT EXISTS channel_bindings (
         team_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
@@ -207,6 +213,7 @@ export class OpsDb {
       ...r,
       skills: this.getAgentSkills(r.agent_id).map((s: any) => s.skill_name),
       model: this.getAgentModel(r.agent_id),
+      integrations: this.getAgentDiscordToken(r.agent_id),
     }));
   }
 
@@ -227,6 +234,7 @@ export class OpsDb {
 
   deleteAgent(agentId: string) {
     this.db.prepare(`DELETE FROM agent_models WHERE agent_id = ?`).run(agentId);
+    this.db.prepare(`DELETE FROM agent_integrations WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM agent_skills WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM team_agents WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM channel_bindings WHERE agent_id = ?`).run(agentId);
@@ -235,6 +243,20 @@ export class OpsDb {
 
   getAgentModel(agentId: string) {
     return this.db.prepare(`SELECT model_provider, model_name FROM agent_models WHERE agent_id = ?`).get(agentId);
+  }
+
+  setAgentDiscordToken(agentId: string, token?: string) {
+    this.db
+      .prepare(
+        `INSERT INTO agent_integrations (agent_id, discord_bot_token)
+         VALUES (?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET discord_bot_token=excluded.discord_bot_token`
+      )
+      .run(agentId, token ?? null);
+  }
+
+  getAgentDiscordToken(agentId: string) {
+    return this.db.prepare(`SELECT discord_bot_token FROM agent_integrations WHERE agent_id = ?`).get(agentId);
   }
 
   setChannelBinding(teamId: string, agentId: string, guildId: string | undefined, channelId: string) {
@@ -260,6 +282,10 @@ export class OpsDb {
     this.db
       .prepare(`INSERT OR IGNORE INTO team_agents (team_id, agent_id, assigned_at) VALUES (?, ?, ?)`)
       .run(teamId, agentId, new Date().toISOString());
+  }
+
+  unassignAgentFromTeam(teamId: string, agentId: string) {
+    this.db.prepare(`DELETE FROM team_agents WHERE team_id = ? AND agent_id = ?`).run(teamId, agentId);
   }
 
   createProject(projectId: string, teamId: string, name: string, goal?: string) {
