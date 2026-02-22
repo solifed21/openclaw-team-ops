@@ -241,7 +241,6 @@ export class OpsDb {
       skills: this.getAgentSkills(r.agent_id).map((s: any) => s.skill_name),
       model: this.getAgentModel(r.agent_id),
       integrations: this.getAgentDiscordToken(r.agent_id),
-      policies: this.getAgentDmPolicy(r.agent_id),
     }));
   }
 
