@@ -32,6 +32,23 @@ function layout(title: string, content: string) {
 
 function esc(v: unknown) { return String(v ?? ""); }
 
+function loadRegisteredModels(): { provider: string; name: string }[] {
+  try {
+    const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
+    const raw = readFileSync(cfgPath, "utf8");
+    const cfg = JSON.parse(raw);
+    const models = Array.isArray(cfg?.models) ? cfg.models : [];
+    return models
+      .map((m: any) => ({
+        provider: String(m?.provider || m?.modelProvider || "openclaw"),
+        name: String(m?.name || m?.model || m?.id || ""),
+      }))
+      .filter((m: any) => m.name);
+  } catch {
+    return [];
+  }
+}
+
 async function readForm(req: http.IncomingMessage): Promise<Record<string, string>> {
   return new Promise((resolve) => {
     let body = "";
@@ -77,7 +94,8 @@ const server = http.createServer(async (req, res) => {
     const agentId = path.split("/")[2];
     const f = await readForm(req);
     if (f.role) db.updateAgentRole(agentId, f.role);
-    db.setAgentModel(agentId, f.modelProvider || "openclaw", f.modelName || "");
+    const [provider, modelName] = String(f.modelRef || "openclaw::").split("::");
+    db.setAgentModel(agentId, provider || "openclaw", modelName || "");
     return redirect(res, "/agents");
   }
 
@@ -206,16 +224,23 @@ const server = http.createServer(async (req, res) => {
   if (path === "/agents") {
     const agents: any[] = db.listAgents() as any[];
     const teams: any[] = db.listTeams() as any[];
+    const models = loadRegisteredModels();
+    const modelOptions = models.map((m) => `${m.provider}::${m.name}`);
+
     const teamBlocks = teams.map(t => `<details class="card"><summary><b>${esc(t.name)}</b> <span class="muted">(${t.team_id})</span></summary>
       <div class="list" style="margin-top:10px">${(db.listAgents(t.team_id) as any[]).map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span></div>`).join('') || '<div class="muted">없음</div>'}</div>
-      <form method="post" action="/teams/${t.team_id}/assign" style="margin-top:10px"><select name="agentId">${agents.map(a => `<option value="${a.agent_id}">${esc(a.name)} (${esc(a.role)})</option>`).join('')}</select> <button type="submit">＋ 할당</button></form>
+      <form method="post" action="/teams/${t.team_id}/assign" style="margin-top:10px;display:flex;gap:8px;align-items:center"><label class="muted">에이전트 선택</label><select name="agentId">${agents.map(a => `<option value="${a.agent_id}">${esc(a.name)} (${esc(a.role)})</option>`).join('')}</select> <button type="submit">＋ 할당</button></form>
     </details>`).join('');
+
     const html = layout("에이전트 관리",
-      `<div class="card"><form method="post" action="/agents"><input name="name" placeholder="에이전트 이름" required/> <select name="role">
+      `<div class="card"><form method="post" action="/agents" style="display:grid;gap:8px;max-width:520px"><label class="muted">에이전트 이름</label><input name="name" placeholder="예: qa-bot" required/> <label class="muted">직책(Role)</label><select name="role">
       ${["orchestrator","planner","researcher","executor","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r => `<option>${r}</option>`).join('')}
       </select> <button type="submit">에이전트 생성</button></form></div>
       ${teamBlocks}
-      <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><select name="role">${["orchestrator","planner","researcher","executor","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><input name="modelProvider" placeholder="provider" value="${esc(a.model?.model_provider || 'openclaw')}"/><input name="modelName" placeholder="model" value="${esc(a.model?.model_name || '')}"/><button type="submit">직책/모델 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`);
+      <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => {
+        const current = `${a.model?.model_provider || 'openclaw'}::${a.model?.model_name || ''}`;
+        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select><button type="submit">직책/모델 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
+      }).join('') || '<div class="muted">없음</div>'}</div></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
   }
