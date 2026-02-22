@@ -89,6 +89,14 @@ export class OpsDb {
         FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
       );
 
+      CREATE TABLE IF NOT EXISTS team_discord_targets (
+        team_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        PRIMARY KEY (team_id, guild_id, channel_id),
+        FOREIGN KEY(team_id) REFERENCES teams(team_id)
+      );
+
       CREATE TABLE IF NOT EXISTS projects (
         project_id TEXT PRIMARY KEY,
         team_id TEXT NOT NULL,
@@ -276,6 +284,26 @@ export class OpsDb {
         .all(teamId);
     }
     return this.db.prepare(`SELECT * FROM channel_bindings ORDER BY team_id, channel_id`).all();
+  }
+
+  upsertTeamDiscordTarget(teamId: string, guildId: string, channelId: string) {
+    this.db
+      .prepare(
+        `INSERT INTO team_discord_targets (team_id, guild_id, channel_id)
+         VALUES (?, ?, ?)
+         ON CONFLICT(team_id, guild_id, channel_id) DO NOTHING`
+      )
+      .run(teamId, guildId, channelId);
+  }
+
+  listTeamDiscordTargets(teamId: string) {
+    return this.db
+      .prepare(`SELECT * FROM team_discord_targets WHERE team_id = ? ORDER BY guild_id, channel_id`)
+      .all(teamId);
+  }
+
+  listAllTeamDiscordTargets() {
+    return this.db.prepare(`SELECT * FROM team_discord_targets ORDER BY team_id, guild_id, channel_id`).all();
   }
 
   assignAgentToTeam(teamId: string, agentId: string) {

@@ -149,6 +149,13 @@ const server = http.createServer(async (req, res) => {
     return redirect(res, "/agents");
   }
 
+  if (req.method === "POST" && path.startsWith("/teams/") && path.endsWith("/discord-target")) {
+    const teamId = path.split("/")[2];
+    const f = await readForm(req);
+    if (f.guildId && f.channelId) db.upsertTeamDiscordTarget(teamId, f.guildId, f.channelId);
+    return redirect(res, "/agents");
+  }
+
   if (req.method === "POST" && path === "/projects") {
     const f = await readForm(req);
     if (f.teamId) db.createProject(`proj_${randomUUID().slice(0, 8)}`, f.teamId, f.name || "새 프로젝트", f.goal || "");
@@ -200,6 +207,7 @@ const server = http.createServer(async (req, res) => {
       const cfg = JSON.parse(raw);
       const agents = db.listAgents() as any[];
       const channelBindings = db.listChannelBindings() as any[];
+      const teamTargets = db.listAllTeamDiscordTargets() as any[];
 
       cfg.agents = cfg.agents || {};
       cfg.agents.list = Array.isArray(cfg.agents.list) ? cfg.agents.list : [];
@@ -243,6 +251,7 @@ const server = http.createServer(async (req, res) => {
       const bindingKey = (b: any) => `${b?.agentId}|${b?.match?.guildId}|${b?.match?.peer?.id}`;
       const existingBindingKeys = new Set(cfg.bindings.map((b: any) => bindingKey(b)));
 
+      // Direct per-agent bindings from DB
       for (const b of channelBindings) {
         const agentId = String(b.agent_id || "").replace(/^agent_/, "");
         const guildId = String(b.guild_id || "");
@@ -270,6 +279,42 @@ const server = http.createServer(async (req, res) => {
         if (!existingBindingKeys.has(key)) {
           cfg.bindings.push(binding);
           existingBindingKeys.add(key);
+        }
+      }
+
+      // Team target bindings: bind ALL team agents to each team channel target
+      for (const t of teamTargets) {
+        const teamId = String(t.team_id || "");
+        const guildId = String(t.guild_id || "");
+        const channelId = String(t.channel_id || "");
+        if (!teamId || !guildId || !channelId) continue;
+
+        cfg.channels.discord.guilds[guildId] = cfg.channels.discord.guilds[guildId] || { channels: {} };
+        cfg.channels.discord.guilds[guildId].channels = cfg.channels.discord.guilds[guildId].channels || {};
+        cfg.channels.discord.guilds[guildId].channels[channelId] = {
+          ...(cfg.channels.discord.guilds[guildId].channels[channelId] || {}),
+          allow: true,
+          requireMention: true,
+        };
+
+        const teamAgents = db.listAgents(teamId) as any[];
+        for (const a of teamAgents) {
+          const agentId = String(a.agent_id || "").replace(/^agent_/, "");
+          if (!agentId) continue;
+          const binding = {
+            agentId,
+            match: {
+              channel: "discord",
+              accountId: agentId,
+              guildId,
+              peer: { kind: "channel", id: channelId },
+            },
+          };
+          const key = bindingKey(binding);
+          if (!existingBindingKeys.has(key)) {
+            cfg.bindings.push(binding);
+            existingBindingKeys.add(key);
+          }
         }
       }
 
@@ -325,10 +370,16 @@ const server = http.createServer(async (req, res) => {
     const models = loadRegisteredModels();
     const modelOptions = models.map((m) => `${m.provider}::${m.name}`);
 
-    const teamBlocks = teams.map(t => `<details class="card"><summary><b>${esc(t.name)}</b> <span class="muted">(${t.team_id})</span></summary>
+    const teamBlocks = teams.map(t => {
+      const targets = db.listTeamDiscordTargets(t.team_id) as any[];
+      return `<details class="card"><summary><b>${esc(t.name)}</b> <span class="muted">(${t.team_id})</span></summary>
       <div class="list" style="margin-top:10px">${(db.listAgents(t.team_id) as any[]).map(a => `<div style="display:flex;gap:8px;align-items:center"><span><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span></span><form method="post" action="/teams/${t.team_id}/unassign"><input type="hidden" name="agentId" value="${a.agent_id}"/><button type="submit">제거</button></form></div>`).join('') || '<div class="muted">없음</div>'}</div>
       <form method="post" action="/teams/${t.team_id}/assign" style="margin-top:10px;display:flex;gap:8px;align-items:center"><label class="muted">에이전트 선택</label><select name="agentId">${agents.map(a => `<option value="${a.agent_id}">${esc(a.name)} (${esc(a.role)})</option>`).join('')}</select> <button type="submit">＋ 할당</button></form>
-    </details>`).join('');
+      <div style="margin-top:10px" class="muted">팀 Discord 서버/채널 (팀 에이전트 전원 바인딩)</div>
+      <form method="post" action="/teams/${t.team_id}/discord-target" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input name="guildId" placeholder="guild id" required/><input name="channelId" placeholder="channel id" required/><button type="submit">채널 추가</button></form>
+      <div class="list" style="margin-top:8px">${targets.map(x => `<div><code>${x.guild_id}</code> / <code>${x.channel_id}</code></div>`).join('') || '<div class="muted">설정된 채널 없음</div>'}</div>
+    </details>`;
+    }).join('');
 
     const html = layout("에이전트 관리",
       `<div class="card"><form method="post" action="/agents" style="display:grid;gap:8px;max-width:520px"><label class="muted">에이전트 이름</label><input name="name" placeholder="예: qa-bot" required/> <label class="muted">직책(Role)</label><select name="role">
