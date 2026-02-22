@@ -144,6 +144,14 @@ export class OpsDb {
     return this.db.prepare(`SELECT * FROM teams WHERE team_id = ?`).get(teamId);
   }
 
+  deleteTeam(teamId: string) {
+    this.db.prepare(`DELETE FROM channel_bindings WHERE team_id = ?`).run(teamId);
+    this.db.prepare(`DELETE FROM team_agents WHERE team_id = ?`).run(teamId);
+    this.db.prepare(`DELETE FROM projects WHERE team_id = ?`).run(teamId);
+    this.db.prepare(`DELETE FROM runs WHERE team_id = ?`).run(teamId);
+    this.db.prepare(`DELETE FROM teams WHERE team_id = ?`).run(teamId);
+  }
+
   createAgent(agentId: string, name: string, role: string, status = "idle") {
     this.db
       .prepare(`INSERT INTO agents (agent_id, name, role, status, created_at) VALUES (?, ?, ?, ?, ?)`)
@@ -205,6 +213,19 @@ export class OpsDb {
          ON CONFLICT(agent_id) DO UPDATE SET model_provider=excluded.model_provider, model_name=excluded.model_name`
       )
       .run(agentId, provider ?? null, modelName ?? null);
+  }
+
+  updateAgentRole(agentId: string, role: string) {
+    this.db.prepare(`UPDATE agents SET role = ? WHERE agent_id = ?`).run(role, agentId);
+    this.rebuildRoleSkills(agentId, role);
+  }
+
+  deleteAgent(agentId: string) {
+    this.db.prepare(`DELETE FROM agent_models WHERE agent_id = ?`).run(agentId);
+    this.db.prepare(`DELETE FROM agent_skills WHERE agent_id = ?`).run(agentId);
+    this.db.prepare(`DELETE FROM team_agents WHERE agent_id = ?`).run(agentId);
+    this.db.prepare(`DELETE FROM channel_bindings WHERE agent_id = ?`).run(agentId);
+    this.db.prepare(`DELETE FROM agents WHERE agent_id = ?`).run(agentId);
   }
 
   getAgentModel(agentId: string) {

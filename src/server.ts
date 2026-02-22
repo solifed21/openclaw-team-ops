@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { TeamOrchestrator } from "./orchestrator.js";
@@ -61,9 +61,29 @@ const server = http.createServer(async (req, res) => {
     return redirect(res, "/teams");
   }
 
+  if (req.method === "POST" && path.startsWith("/teams/") && path.endsWith("/delete")) {
+    const teamId = path.split("/")[2];
+    db.deleteTeam(teamId);
+    return redirect(res, "/teams");
+  }
+
   if (req.method === "POST" && path === "/agents") {
     const f = await readForm(req);
     db.createAgent(`agent_${randomUUID().slice(0, 8)}`, f.name || "새 에이전트", f.role || "executor", "idle");
+    return redirect(res, "/agents");
+  }
+
+  if (req.method === "POST" && path.startsWith("/agents/") && path.endsWith("/update")) {
+    const agentId = path.split("/")[2];
+    const f = await readForm(req);
+    if (f.role) db.updateAgentRole(agentId, f.role);
+    db.setAgentModel(agentId, f.modelProvider || "openclaw", f.modelName || "");
+    return redirect(res, "/agents");
+  }
+
+  if (req.method === "POST" && path.startsWith("/agents/") && path.endsWith("/delete")) {
+    const agentId = path.split("/")[2];
+    db.deleteAgent(agentId);
     return redirect(res, "/agents");
   }
 
@@ -118,6 +138,35 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && path === "/sync/openclaw-config") {
+    try {
+      const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
+      const raw = readFileSync(cfgPath, "utf8");
+      const cfg = JSON.parse(raw);
+      const agents = db.listAgents() as any[];
+      const bindings = db.listChannelBindings() as any[];
+
+      cfg.meta = cfg.meta || {};
+      cfg.meta.teamOps = {
+        syncedAt: new Date().toISOString(),
+        agents: agents.map((a) => ({
+          agentId: a.agent_id,
+          name: a.name,
+          role: a.role,
+          modelProvider: a.model?.model_provider || "",
+          modelName: a.model?.model_name || "",
+          skills: a.skills || [],
+        })),
+        channelBindings: bindings,
+      };
+
+      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+      return redirect(res, "/settings?sync=ok");
+    } catch {
+      return redirect(res, "/settings?sync=fail");
+    }
+  }
+
   if (path === "/" || path === "/team-status") {
     const teams = db.listTeams();
     const cards = teams.map((t: any) => `<a class="card" href="/team-status/${t.team_id}" style="text-decoration:none;color:inherit"><h3>${esc(t.name)}</h3><div class="muted">Agents: ${t.agent_count} · Projects: ${t.project_count}</div></a>`).join("");
@@ -149,7 +198,7 @@ const server = http.createServer(async (req, res) => {
     const teams = db.listTeams();
     const html = layout("팀 만들기/목록",
       `<div class="card"><form method="post" action="/teams"><input name="name" placeholder="팀 이름" required/> <input name="description" placeholder="설명"/> <button type="submit">팀 생성</button></form></div>
-       <div class="card"><div class="list">${teams.map((t: any) => `<div><code>${t.team_id}</code> - ${esc(t.name)}</div>`).join('') || '<div class="muted">없음</div>'}</div></div>`);
+       <div class="card"><div class="list">${teams.map((t: any) => `<div style="display:flex;gap:8px;align-items:center"><span><code>${t.team_id}</code> - ${esc(t.name)}</span><form method="post" action="/teams/${t.team_id}/delete" onsubmit="return confirm('팀 삭제?')"><button type="submit">삭제</button></form></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
   }
@@ -166,7 +215,7 @@ const server = http.createServer(async (req, res) => {
       ${["orchestrator","planner","researcher","executor","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r => `<option>${r}</option>`).join('')}
       </select> <button type="submit">에이전트 생성</button></form></div>
       ${teamBlocks}
-      <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`);
+      <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><select name="role">${["orchestrator","planner","researcher","executor","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><input name="modelProvider" placeholder="provider" value="${esc(a.model?.model_provider || 'openclaw')}"/><input name="modelName" placeholder="model" value="${esc(a.model?.model_name || '')}"/><button type="submit">직책/모델 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
   }
@@ -193,8 +242,10 @@ const server = http.createServer(async (req, res) => {
 
   if (path === "/settings") {
     const importState = url.searchParams.get("import");
-    const note = importState === "ok" ? "<div class=\"muted\">openclaw.json import 성공</div>" : importState === "fail" ? "<div class=\"muted\">openclaw.json import 실패</div>" : "";
-    const html = layout("팀 설정", `<div class="card">${note}<div class="muted">역할 정책/승인 정책/워크플로우 기본값 설정 예정</div><form method="post" action="/import/openclaw-config" style="margin-top:10px"><button type="submit">openclaw.json 가져오기</button></form></div>`);
+    const syncState = url.searchParams.get("sync");
+    const noteImport = importState === "ok" ? "<div class=\"muted\">openclaw.json import 성공</div>" : importState === "fail" ? "<div class=\"muted\">openclaw.json import 실패</div>" : "";
+    const noteSync = syncState === "ok" ? "<div class=\"muted\">openclaw.json 반영(sync) 성공</div>" : syncState === "fail" ? "<div class=\"muted\">openclaw.json 반영(sync) 실패</div>" : "";
+    const html = layout("팀 설정", `<div class="card">${noteImport}${noteSync}<div class="muted">역할 정책/승인 정책/워크플로우 기본값 설정</div><form method="post" action="/import/openclaw-config" style="margin-top:10px"><button type="submit">openclaw.json 가져오기(import)</button></form><form method="post" action="/sync/openclaw-config" style="margin-top:10px"><button type="submit">openclaw.json 반영(sync)</button></form></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
   }
