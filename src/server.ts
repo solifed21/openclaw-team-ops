@@ -143,6 +143,7 @@ const server = http.createServer(async (req, res) => {
     if (f.role) db.updateAgentProfile(agentId, f.role, f.name);
     const [provider, modelName] = String(f.modelRef || "openclaw::").split("::");
     db.setAgentModel(agentId, provider || "openclaw", modelName || "");
+    if (f.dmPolicy) db.setAgentDmPolicy(agentId, f.dmPolicy);
     if (Object.prototype.hasOwnProperty.call(f, "discordBotToken")) {
       db.setAgentDiscordToken(agentId, f.discordBotToken || "");
     }
@@ -228,6 +229,7 @@ const server = http.createServer(async (req, res) => {
       const agents = db.listAgents() as any[];
       const channelBindings = db.listChannelBindings() as any[];
       const teamTargets = db.listAllTeamDiscordTargets() as any[];
+      const dmPolicyByDbAgentId = new Map(agents.map((a) => [String(a.agent_id), String(a.policies?.dm_policy || 'mention-only')]));
 
       cfg.agents = cfg.agents || {};
       cfg.agents.list = Array.isArray(cfg.agents.list) ? cfg.agents.list : [];
@@ -292,12 +294,15 @@ const server = http.createServer(async (req, res) => {
         const channelId = String(b.channel_id || "");
         if (!agentId || !guildId || !channelId) continue;
 
+        const dmPolicy = dmPolicyByDbAgentId.get(dbAgentId) || 'mention-only';
+        if (dmPolicy === 'off') continue;
+
         cfg.channels.discord.guilds[guildId] = cfg.channels.discord.guilds[guildId] || { channels: {} };
         cfg.channels.discord.guilds[guildId].channels = cfg.channels.discord.guilds[guildId].channels || {};
         cfg.channels.discord.guilds[guildId].channels[channelId] = {
           ...(cfg.channels.discord.guilds[guildId].channels[channelId] || {}),
           allow: true,
-          requireMention: true,
+          requireMention: dmPolicy !== 'allow',
         };
 
         const binding = {
@@ -336,6 +341,8 @@ const server = http.createServer(async (req, res) => {
           const dbAgentId = String(a.agent_id || "");
           const agentId = runtimeIdByDbAgentId.get(dbAgentId) || "";
           if (!agentId) continue;
+          const dmPolicy = dmPolicyByDbAgentId.get(dbAgentId) || 'mention-only';
+          if (dmPolicy === 'off') continue;
           const binding = {
             agentId,
             match: {
@@ -381,7 +388,7 @@ const server = http.createServer(async (req, res) => {
     const html = layout(
       `팀 상세 - ${esc(team?.name || teamId)}`,
       `<div class="card"><h3>${esc(team?.name || teamId)}</h3><div class="muted">${esc(team?.description || '설명 없음')}</div></div>
-       <div class="card"><h3>팀 내부 Agent 작업현황</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
+       <div class="card"><h3>팀 내부 Agent 작업현황</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">dm 정책: ${esc(a.policies?.dm_policy || 'mention-only')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Discord 채널 바인딩</h3><div class="list">${bindings.map(b => `<div><code>${esc(b.channel_id)}</code> <span class="muted">agent: ${esc(b.agent_id)} guild: ${esc(b.guild_id || '-')}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Runs</h3><div class="list">${runs.map(r => `<div><code>${r.run_id}</code> <span class="badge">${r.status}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Logs</h3><div class="list">${events.slice(0,50).map(e => `<div><code>${e.event_type}</code> <span class="muted">${new Date(e.occurred_at).toLocaleTimeString()}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`
@@ -423,7 +430,7 @@ const server = http.createServer(async (req, res) => {
       ${teamBlocks}
       <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => {
         const current = `${a.model?.model_provider || 'openclaw'}::${a.model?.model_name || ''}`;
-        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">discord token: ${a.integrations?.discord_bot_token ? '연결됨(숨김)' : '미설정'}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">에이전트 이름</label><input name="name" value="${esc(a.name)}"/><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor-backend","executor-frontend","executor-mobile","executor-data","executor-devops","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select>${a.integrations?.discord_bot_token ? '<div class="muted">Discord Bot Token은 등록 후 보안상 숨김 처리됨</div>' : '<label class="muted">Discord Bot Token (에이전트 전용)</label><input name="discordBotToken" value="" placeholder="Bot token"/>'}<button type="submit">이름/직책/모델 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
+        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">dm 정책: ${esc(a.policies?.dm_policy || 'mention-only')}</div><div class="muted">discord token: ${a.integrations?.discord_bot_token ? '연결됨(숨김)' : '미설정'}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">에이전트 이름</label><input name="name" value="${esc(a.name)}"/><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor-backend","executor-frontend","executor-mobile","executor-data","executor-devops","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select><label class="muted">DM 호출 정책</label><select name="dmPolicy">${['off','mention-only','allow'].map(p=>`<option ${ (a.policies?.dm_policy||'mention-only')===p?'selected':'' }>${p}</option>`).join('')}</select>${a.integrations?.discord_bot_token ? '<div class="muted">Discord Bot Token은 등록 후 보안상 숨김 처리됨</div>' : '<label class="muted">Discord Bot Token (에이전트 전용)</label><input name="discordBotToken" value="" placeholder="Bot token"/>'}<button type="submit">이름/직책/모델/DM정책 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
       }).join('') || '<div class="muted">없음</div>'}</div></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);

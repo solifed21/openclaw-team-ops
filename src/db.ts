@@ -78,6 +78,12 @@ export class OpsDb {
         FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
       );
 
+      CREATE TABLE IF NOT EXISTS agent_policies (
+        agent_id TEXT PRIMARY KEY,
+        dm_policy TEXT NOT NULL DEFAULT 'mention-only',
+        FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
+      );
+
       CREATE TABLE IF NOT EXISTS channel_bindings (
         team_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
@@ -176,6 +182,7 @@ export class OpsDb {
       .prepare(`INSERT INTO agents (agent_id, name, role, status, created_at) VALUES (?, ?, ?, ?, ?)`)
       .run(agentId, name, role, status, new Date().toISOString());
     this.rebuildRoleSkills(agentId, role);
+    this.setAgentDmPolicy(agentId, "mention-only");
   }
 
   ensureAgent(agentId: string, name: string, role: string, status = "online") {
@@ -187,6 +194,7 @@ export class OpsDb {
       )
       .run(agentId, name, role, status, new Date().toISOString());
     this.rebuildRoleSkills(agentId, role);
+    this.setAgentDmPolicy(agentId, this.getAgentDmPolicy(agentId)?.dm_policy || "mention-only");
   }
 
   private rebuildRoleSkills(agentId: string, role: string) {
@@ -222,6 +230,7 @@ export class OpsDb {
       skills: this.getAgentSkills(r.agent_id).map((s: any) => s.skill_name),
       model: this.getAgentModel(r.agent_id),
       integrations: this.getAgentDiscordToken(r.agent_id),
+      policies: this.getAgentDmPolicy(r.agent_id),
     }));
   }
 
@@ -243,6 +252,7 @@ export class OpsDb {
   deleteAgent(agentId: string) {
     this.db.prepare(`DELETE FROM agent_models WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM agent_integrations WHERE agent_id = ?`).run(agentId);
+    this.db.prepare(`DELETE FROM agent_policies WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM agent_skills WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM team_agents WHERE agent_id = ?`).run(agentId);
     this.db.prepare(`DELETE FROM channel_bindings WHERE agent_id = ?`).run(agentId);
@@ -265,6 +275,20 @@ export class OpsDb {
 
   getAgentDiscordToken(agentId: string) {
     return this.db.prepare(`SELECT discord_bot_token FROM agent_integrations WHERE agent_id = ?`).get(agentId);
+  }
+
+  setAgentDmPolicy(agentId: string, dmPolicy: string) {
+    this.db
+      .prepare(
+        `INSERT INTO agent_policies (agent_id, dm_policy)
+         VALUES (?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET dm_policy=excluded.dm_policy`
+      )
+      .run(agentId, dmPolicy || "mention-only");
+  }
+
+  getAgentDmPolicy(agentId: string) {
+    return this.db.prepare(`SELECT dm_policy FROM agent_policies WHERE agent_id = ?`).get(agentId);
   }
 
   setChannelBinding(teamId: string, agentId: string, guildId: string | undefined, channelId: string) {
