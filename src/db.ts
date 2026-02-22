@@ -220,8 +220,8 @@ export class OpsDb {
       .run(agentId, provider ?? null, modelName ?? null);
   }
 
-  updateAgentRole(agentId: string, role: string) {
-    this.db.prepare(`UPDATE agents SET role = ? WHERE agent_id = ?`).run(role, agentId);
+  updateAgentProfile(agentId: string, role: string, name?: string) {
+    this.db.prepare(`UPDATE agents SET role = ?, name = COALESCE(?, name) WHERE agent_id = ?`).run(role, name ?? null, agentId);
     this.rebuildRoleSkills(agentId, role);
   }
 

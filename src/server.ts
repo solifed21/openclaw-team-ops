@@ -37,13 +37,26 @@ function loadRegisteredModels(): { provider: string; name: string }[] {
     const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
     const raw = readFileSync(cfgPath, "utf8");
     const cfg = JSON.parse(raw);
+
+    const out: { provider: string; name: string }[] = [];
+    const push = (provider: string, name: string) => {
+      if (!name) return;
+      out.push({ provider: provider || "openclaw", name });
+    };
+
     const models = Array.isArray(cfg?.models) ? cfg.models : [];
-    return models
-      .map((m: any) => ({
-        provider: String(m?.provider || m?.modelProvider || "openclaw"),
-        name: String(m?.name || m?.model || m?.id || ""),
-      }))
-      .filter((m: any) => m.name);
+    for (const m of models) {
+      push(String(m?.provider || m?.modelProvider || "openclaw"), String(m?.name || m?.model || m?.id || ""));
+    }
+
+    const agents = Array.isArray(cfg?.agents) ? cfg.agents : [];
+    for (const a of agents) {
+      push(String(a?.modelProvider || a?.provider || "openclaw"), String(a?.model || a?.modelName || ""));
+    }
+
+    const uniq = new Map<string, { provider: string; name: string }>();
+    for (const m of out) uniq.set(`${m.provider}::${m.name}`, m);
+    return [...uniq.values()];
   } catch {
     return [];
   }
@@ -93,7 +106,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && path.startsWith("/agents/") && path.endsWith("/update")) {
     const agentId = path.split("/")[2];
     const f = await readForm(req);
-    if (f.role) db.updateAgentRole(agentId, f.role);
+    if (f.role) db.updateAgentProfile(agentId, f.role, f.name);
     const [provider, modelName] = String(f.modelRef || "openclaw::").split("::");
     db.setAgentModel(agentId, provider || "openclaw", modelName || "");
     return redirect(res, "/agents");
@@ -239,7 +252,7 @@ const server = http.createServer(async (req, res) => {
       ${teamBlocks}
       <div class="card"><h3>전체 에이전트 목록</h3><div class="list">${agents.map(a => {
         const current = `${a.model?.model_provider || 'openclaw'}::${a.model?.model_name || ''}`;
-        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor-backend","executor-frontend","executor-mobile","executor-data","executor-devops","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select><button type="submit">직책/모델 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
+        return `<div style="border:1px solid #294275;border-radius:10px;padding:10px"><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div><form method="post" action="/agents/${a.agent_id}/update" style="margin-top:8px;display:grid;gap:6px;max-width:560px"><label class="muted">에이전트 이름</label><input name="name" value="${esc(a.name)}"/><label class="muted">직책(Role)</label><select name="role">${["orchestrator","planner","researcher","executor-backend","executor-frontend","executor-mobile","executor-data","executor-devops","reviewer","qa","approver","ops","analyst","scribe","commander"].map(r=>`<option ${a.role===r?'selected':''}>${r}</option>`).join('')}</select><label class="muted">모델(등록된 openclaw.json 모델)</label><select name="modelRef">${modelOptions.length?modelOptions.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v}</option>`).join(''):`<option value="${current}">${current}</option>`}</select><button type="submit">직책/모델 변경</button></form><form method="post" action="/agents/${a.agent_id}/delete" onsubmit="return confirm('에이전트 삭제?')" style="margin-top:6px"><button type="submit">에이전트 삭제</button></form></div>`;
       }).join('') || '<div class="muted">없음</div>'}</div></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
