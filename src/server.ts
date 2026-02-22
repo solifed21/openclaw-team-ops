@@ -32,6 +32,26 @@ function layout(title: string, content: string) {
 
 function esc(v: unknown) { return String(v ?? ""); }
 
+function toRuntimeAgentId(agent: any, used: Set<string>): string {
+  const rawName = String(agent?.name || "").trim().toLowerCase();
+  const slug = rawName
+    .replace(/[^a-z0-9\-_\s]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+
+  let id = slug || String(agent?.agent_id || "agent").replace(/^agent_/, "") || "agent";
+  if (id === "agent") id = `agent-${Math.random().toString(36).slice(2, 6)}`;
+
+  let candidate = id;
+  let n = 2;
+  while (used.has(candidate)) {
+    candidate = `${id}-${n++}`;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
 function loadRegisteredModels(): { provider: string; name: string }[] {
   try {
     const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
@@ -212,16 +232,28 @@ const server = http.createServer(async (req, res) => {
       cfg.agents = cfg.agents || {};
       cfg.agents.list = Array.isArray(cfg.agents.list) ? cfg.agents.list : [];
 
-      // Merge/Upsert team-ops agents into OpenClaw agent list (preserve existing unknown fields)
+      // Merge/Upsert team-ops agents into OpenClaw agent list using nickname-style runtime ids
       const existingById = new Map((cfg.agents.list || []).map((a: any) => [a.id, a]));
+      const usedRuntimeIds = new Set<string>([...existingById.keys()]);
+      const runtimeIdByDbAgentId = new Map<string, string>();
+
       for (const a of agents) {
-        const agentId = String(a.agent_id || "").replace(/^agent_/, "");
-        if (!agentId) continue;
-        const prev = existingById.get(agentId) || { id: agentId };
+        const dbAgentId = String(a.agent_id || "");
+        if (!dbAgentId) continue;
+
+        // preserve cc and any existing explicit id match first
+        let runtimeId = dbAgentId === "agent_cc" ? "cc" : "";
+        if (!runtimeId) {
+          const existingByName = [...existingById.keys()].find((id) => id === String(a.name || "").toLowerCase());
+          runtimeId = existingByName || toRuntimeAgentId(a, usedRuntimeIds);
+        }
+        runtimeIdByDbAgentId.set(dbAgentId, runtimeId);
+
+        const prev = existingById.get(runtimeId) || { id: runtimeId };
         const modelRef = a.model?.model_name || prev.model || cfg?.agents?.defaults?.model?.primary;
-        existingById.set(agentId, {
+        existingById.set(runtimeId, {
           ...prev,
-          id: agentId,
+          id: runtimeId,
           model: modelRef,
         });
       }
@@ -235,7 +267,8 @@ const server = http.createServer(async (req, res) => {
 
       // Agent token -> channels.discord.accounts.{agentId}.token
       for (const a of agents) {
-        const agentId = String(a.agent_id || "").replace(/^agent_/, "");
+        const dbAgentId = String(a.agent_id || "");
+        const agentId = runtimeIdByDbAgentId.get(dbAgentId) || "";
         if (!agentId) continue;
         const token = a.integrations?.discord_bot_token || "";
         if (!token) continue;
@@ -253,7 +286,8 @@ const server = http.createServer(async (req, res) => {
 
       // Direct per-agent bindings from DB
       for (const b of channelBindings) {
-        const agentId = String(b.agent_id || "").replace(/^agent_/, "");
+        const dbAgentId = String(b.agent_id || "");
+        const agentId = runtimeIdByDbAgentId.get(dbAgentId) || "";
         const guildId = String(b.guild_id || "");
         const channelId = String(b.channel_id || "");
         if (!agentId || !guildId || !channelId) continue;
@@ -299,7 +333,8 @@ const server = http.createServer(async (req, res) => {
 
         const teamAgents = db.listAgents(teamId) as any[];
         for (const a of teamAgents) {
-          const agentId = String(a.agent_id || "").replace(/^agent_/, "");
+          const dbAgentId = String(a.agent_id || "");
+          const agentId = runtimeIdByDbAgentId.get(dbAgentId) || "";
           if (!agentId) continue;
           const binding = {
             agentId,
