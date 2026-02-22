@@ -60,6 +60,24 @@ export class OpsDb {
         FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
       );
 
+      CREATE TABLE IF NOT EXISTS agent_models (
+        agent_id TEXT PRIMARY KEY,
+        model_provider TEXT,
+        model_name TEXT,
+        FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_bindings (
+        team_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        guild_id TEXT,
+        channel_id TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'discord',
+        PRIMARY KEY (team_id, channel_id),
+        FOREIGN KEY(team_id) REFERENCES teams(team_id),
+        FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
+      );
+
       CREATE TABLE IF NOT EXISTS projects (
         project_id TEXT PRIMARY KEY,
         team_id TEXT NOT NULL,
@@ -172,7 +190,44 @@ export class OpsDb {
           )
           .all(teamId);
 
-    return rows.map((r: any) => ({ ...r, skills: this.getAgentSkills(r.agent_id).map((s: any) => s.skill_name) }));
+    return rows.map((r: any) => ({
+      ...r,
+      skills: this.getAgentSkills(r.agent_id).map((s: any) => s.skill_name),
+      model: this.getAgentModel(r.agent_id),
+    }));
+  }
+
+  setAgentModel(agentId: string, provider?: string, modelName?: string) {
+    this.db
+      .prepare(
+        `INSERT INTO agent_models (agent_id, model_provider, model_name)
+         VALUES (?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET model_provider=excluded.model_provider, model_name=excluded.model_name`
+      )
+      .run(agentId, provider ?? null, modelName ?? null);
+  }
+
+  getAgentModel(agentId: string) {
+    return this.db.prepare(`SELECT model_provider, model_name FROM agent_models WHERE agent_id = ?`).get(agentId);
+  }
+
+  setChannelBinding(teamId: string, agentId: string, guildId: string | undefined, channelId: string) {
+    this.db
+      .prepare(
+        `INSERT INTO channel_bindings (team_id, agent_id, guild_id, channel_id, source)
+         VALUES (?, ?, ?, ?, 'discord')
+         ON CONFLICT(team_id, channel_id) DO UPDATE SET agent_id=excluded.agent_id, guild_id=excluded.guild_id`
+      )
+      .run(teamId, agentId, guildId ?? null, channelId);
+  }
+
+  listChannelBindings(teamId?: string) {
+    if (teamId) {
+      return this.db
+        .prepare(`SELECT * FROM channel_bindings WHERE team_id = ? ORDER BY channel_id ASC`)
+        .all(teamId);
+    }
+    return this.db.prepare(`SELECT * FROM channel_bindings ORDER BY team_id, channel_id`).all();
   }
 
   assignAgentToTeam(teamId: string, agentId: string) {

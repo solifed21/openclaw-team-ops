@@ -1,5 +1,8 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { TeamOrchestrator } from "./orchestrator.js";
 import { OpsDb } from "./db.js";
 
@@ -77,6 +80,44 @@ const server = http.createServer(async (req, res) => {
     return redirect(res, "/projects");
   }
 
+  if (req.method === "POST" && path === "/import/openclaw-config") {
+    try {
+      const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
+      const raw = readFileSync(cfgPath, "utf8");
+      const cfg = JSON.parse(raw);
+      const agents = Array.isArray(cfg?.agents) ? cfg.agents : [];
+
+      const defaultTeamId = "team_imported";
+      try { db.createTeam(defaultTeamId, "Imported Team", "openclaw.json 동기화"); } catch {}
+
+      for (const a of agents) {
+        const agentId = `agent_${String(a?.id || a?.name || randomUUID().slice(0, 8))}`;
+        const role = String(a?.role || "executor");
+        const name = String(a?.name || a?.id || "agent");
+        db.ensureAgent(agentId, name, role, "online");
+        db.assignAgentToTeam(defaultTeamId, agentId);
+
+        const provider = String(a?.modelProvider || a?.provider || "openclaw");
+        const modelName = String(a?.model || a?.modelName || "");
+        db.setAgentModel(agentId, provider, modelName);
+
+        const guilds = Array.isArray(a?.guilds) ? a.guilds : [];
+        for (const g of guilds) {
+          const gid = String(g?.id || g?.guildId || "");
+          const channels = Array.isArray(g?.channels) ? g.channels : [];
+          for (const c of channels) {
+            const cid = typeof c === "string" ? c : String(c?.id || c?.channelId || "");
+            if (cid) db.setChannelBinding(defaultTeamId, agentId, gid || undefined, cid);
+          }
+        }
+      }
+
+      return redirect(res, "/settings?import=ok");
+    } catch {
+      return redirect(res, "/settings?import=fail");
+    }
+  }
+
   if (path === "/" || path === "/team-status") {
     const teams = db.listTeams();
     const cards = teams.map((t: any) => `<a class="card" href="/team-status/${t.team_id}" style="text-decoration:none;color:inherit"><h3>${esc(t.name)}</h3><div class="muted">Agents: ${t.agent_count} · Projects: ${t.project_count}</div></a>`).join("");
@@ -91,10 +132,12 @@ const server = http.createServer(async (req, res) => {
     const agents: any[] = db.listAgents(teamId) as any[];
     const runs: any[] = db.listRuns(teamId) as any[];
     const events: any[] = db.listEvents(undefined, teamId) as any[];
+    const bindings: any[] = db.listChannelBindings(teamId) as any[];
     const html = layout(
       `팀 상세 - ${esc(team?.name || teamId)}`,
       `<div class="card"><h3>${esc(team?.name || teamId)}</h3><div class="muted">${esc(team?.description || '설명 없음')}</div></div>
-       <div class="card"><h3>팀 내부 Agent 작업현황</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
+       <div class="card"><h3>팀 내부 Agent 작업현황</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
+       <div class="card"><h3>Discord 채널 바인딩</h3><div class="list">${bindings.map(b => `<div><code>${esc(b.channel_id)}</code> <span class="muted">agent: ${esc(b.agent_id)} guild: ${esc(b.guild_id || '-')}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Runs</h3><div class="list">${runs.map(r => `<div><code>${r.run_id}</code> <span class="badge">${r.status}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Logs</h3><div class="list">${events.slice(0,50).map(e => `<div><code>${e.event_type}</code> <span class="muted">${new Date(e.occurred_at).toLocaleTimeString()}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`
     );
@@ -149,7 +192,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (path === "/settings") {
-    const html = layout("팀 설정", `<div class="card"><div class="muted">역할 정책/승인 정책/워크플로우 기본값 설정 예정</div></div>`);
+    const importState = url.searchParams.get("import");
+    const note = importState === "ok" ? "<div class=\"muted\">openclaw.json import 성공</div>" : importState === "fail" ? "<div class=\"muted\">openclaw.json import 실패</div>" : "";
+    const html = layout("팀 설정", `<div class="card">${note}<div class="muted">역할 정책/승인 정책/워크플로우 기본값 설정 예정</div><form method="post" action="/import/openclaw-config" style="margin-top:10px"><button type="submit">openclaw.json 가져오기</button></form></div>`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.end(html);
   }
