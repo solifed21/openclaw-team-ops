@@ -176,6 +176,85 @@ const server = http.createServer(async (req, res) => {
     return redirect(res, "/agents");
   }
 
+  if (req.method === "POST" && path.startsWith("/teams/") && path.endsWith("/apply-mention-handoff")) {
+    const teamId = path.split("/")[2];
+    try {
+      const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
+      const raw = readFileSync(cfgPath, "utf8");
+      const cfg = JSON.parse(raw);
+
+      cfg.channels = cfg.channels || {};
+      cfg.channels.discord = cfg.channels.discord || { enabled: true, guilds: {}, accounts: {} };
+      cfg.channels.discord.guilds = cfg.channels.discord.guilds || {};
+      cfg.channels.discord.accounts = cfg.channels.discord.accounts || {};
+      cfg.bindings = Array.isArray(cfg.bindings) ? cfg.bindings : [];
+
+      const existingById = new Map((cfg?.agents?.list || []).map((a: any) => [a.id, a]));
+      const usedRuntimeIds = new Set<string>([...existingById.keys()]);
+      const runtimeIdByDbAgentId = new Map<string, string>();
+
+      const teamAgents = db.listAgents(teamId) as any[];
+      for (const a of teamAgents) {
+        const dbAgentId = String(a.agent_id || "");
+        if (!dbAgentId) continue;
+        let runtimeId = dbAgentId === "agent_cc" ? "cc" : "";
+        if (!runtimeId) {
+          const existingByName = [...existingById.keys()].find((id) => id === String(a.name || "").toLowerCase());
+          runtimeId = existingByName || toRuntimeAgentId(a, usedRuntimeIds);
+        }
+        runtimeIdByDbAgentId.set(dbAgentId, runtimeId);
+
+        cfg.channels.discord.accounts[runtimeId] = {
+          ...(cfg.channels.discord.accounts[runtimeId] || {}),
+          ...(a.integrations?.discord_bot_token ? { token: a.integrations.discord_bot_token } : {}),
+          enabled: true,
+        };
+      }
+
+      const bindingKey = (b: any) => `${b?.agentId}|${b?.match?.guildId}|${b?.match?.peer?.id}`;
+      const existingBindingKeys = new Set(cfg.bindings.map((b: any) => bindingKey(b)));
+      const targets = db.listTeamDiscordTargets(teamId) as any[];
+
+      for (const t of targets) {
+        const guildId = String(t.guild_id || "");
+        const channelId = String(t.channel_id || "");
+        if (!guildId || !channelId) continue;
+
+        cfg.channels.discord.guilds[guildId] = cfg.channels.discord.guilds[guildId] || { channels: {} };
+        cfg.channels.discord.guilds[guildId].channels = cfg.channels.discord.guilds[guildId].channels || {};
+        cfg.channels.discord.guilds[guildId].channels[channelId] = {
+          ...(cfg.channels.discord.guilds[guildId].channels[channelId] || {}),
+          allow: true,
+          requireMention: true,
+        };
+
+        for (const a of teamAgents) {
+          const agentId = runtimeIdByDbAgentId.get(String(a.agent_id || "")) || "";
+          if (!agentId) continue;
+          const binding = {
+            agentId,
+            match: {
+              channel: "discord",
+              accountId: agentId,
+              guildId,
+              peer: { kind: "channel", id: channelId },
+            },
+          };
+          const key = bindingKey(binding);
+          if (!existingBindingKeys.has(key)) {
+            cfg.bindings.push(binding);
+            existingBindingKeys.add(key);
+          }
+        }
+      }
+
+      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+      return redirect(res, `/team-status/${teamId}?apply=ok`);
+    } catch {
+      return redirect(res, `/team-status/${teamId}?apply=fail`);
+    }
+  }
+
   if (req.method === "POST" && path === "/projects") {
     const f = await readForm(req);
     if (f.teamId) db.createProject(`proj_${randomUUID().slice(0, 8)}`, f.teamId, f.name || "새 프로젝트", f.goal || "");
@@ -378,6 +457,7 @@ const server = http.createServer(async (req, res) => {
     const runs: any[] = db.listRuns(teamId) as any[];
     const events: any[] = db.listEvents(undefined, teamId) as any[];
     const bindings: any[] = db.listChannelBindings(teamId) as any[];
+    const applyState = url.searchParams.get("apply");
     const mentionTemplates = (agents || []).flatMap((from: any) =>
       (agents || [])
         .filter((to: any) => to.agent_id !== from.agent_id)
@@ -390,7 +470,7 @@ const server = http.createServer(async (req, res) => {
 
     const html = layout(
       `팀 상세 - ${esc(team?.name || teamId)}`,
-      `<div class="card"><h3>${esc(team?.name || teamId)}</h3><div class="muted">${esc(team?.description || '설명 없음')}</div></div>
+      `<div class="card"><h3>${esc(team?.name || teamId)}</h3><div class="muted">${esc(team?.description || '설명 없음')}</div>${applyState==='ok'?'<div class="muted">멘션 협업 설정 적용 성공</div>':applyState==='fail'?'<div class="muted">멘션 협업 설정 적용 실패</div>':''}<form method="post" action="/teams/${teamId}/apply-mention-handoff" style="margin-top:8px"><button type="submit">이 팀 멘션 협업 설정 적용(openclaw.json)</button></form></div>
        <div class="card"><h3>팀 내부 Agent 작업현황</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>봇간 멘션 핸드오프 템플릿</h3><div class="muted">requireMention=true 채널에서 에이전트가 서로 멘션하며 협업할 때 사용.</div><div class="list" style="margin-top:8px">${mentionTemplates.length ? mentionTemplates.join('') : '<div class="muted">팀 에이전트 2명 이상 필요</div>'}</div></div>
        <div class="card"><h3>Discord 채널 바인딩</h3><div class="list">${bindings.map(b => `<div><code>${esc(b.channel_id)}</code> <span class="muted">agent: ${esc(b.agent_id)} guild: ${esc(b.guild_id || '-')}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
