@@ -378,10 +378,21 @@ const server = http.createServer(async (req, res) => {
     const runs: any[] = db.listRuns(teamId) as any[];
     const events: any[] = db.listEvents(undefined, teamId) as any[];
     const bindings: any[] = db.listChannelBindings(teamId) as any[];
+    const mentionTemplates = (agents || []).flatMap((from: any) =>
+      (agents || [])
+        .filter((to: any) => to.agent_id !== from.agent_id)
+        .map((to: any) => {
+          const fromId = String(from.agent_id || '').replace(/^agent_/, '');
+          const toId = String(to.agent_id || '').replace(/^agent_/, '');
+          return `<div><b>${esc(fromId)}</b> → <b>${esc(toId)}</b><br/><code>@${esc(toId)} handoff: [작업요약] / done 조건: [...] / 필요입력: [...]</code></div>`;
+        })
+    );
+
     const html = layout(
       `팀 상세 - ${esc(team?.name || teamId)}`,
       `<div class="card"><h3>${esc(team?.name || teamId)}</h3><div class="muted">${esc(team?.description || '설명 없음')}</div></div>
        <div class="card"><h3>팀 내부 Agent 작업현황</h3><div class="list">${agents.map(a => `<div><b>${esc(a.name)}</b> <span class="badge">${esc(a.role)}</span> <span class="muted">${esc(a.status)}</span><div class="muted">model: ${esc(a.model?.model_provider || '-')} / ${esc(a.model?.model_name || '-')}</div><div class="muted">skills: ${esc((a.skills||[]).join(', '))}</div></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
+       <div class="card"><h3>봇간 멘션 핸드오프 템플릿</h3><div class="muted">requireMention=true 채널에서 에이전트가 서로 멘션하며 협업할 때 사용.</div><div class="list" style="margin-top:8px">${mentionTemplates.length ? mentionTemplates.join('') : '<div class="muted">팀 에이전트 2명 이상 필요</div>'}</div></div>
        <div class="card"><h3>Discord 채널 바인딩</h3><div class="list">${bindings.map(b => `<div><code>${esc(b.channel_id)}</code> <span class="muted">agent: ${esc(b.agent_id)} guild: ${esc(b.guild_id || '-')}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Runs</h3><div class="list">${runs.map(r => `<div><code>${r.run_id}</code> <span class="badge">${r.status}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>
        <div class="card"><h3>Logs</h3><div class="list">${events.slice(0,50).map(e => `<div><code>${e.event_type}</code> <span class="muted">${new Date(e.occurred_at).toLocaleTimeString()}</span></div>`).join('') || '<div class="muted">없음</div>'}</div></div>`
